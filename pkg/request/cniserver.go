@@ -20,6 +20,7 @@ type PodRequest struct {
 	PodNamespace string `json:"pod_namespace"`
 	ContainerID  string `json:"container_id"`
 	NetNs        string `json:"net_ns"`
+	DeviceIDs    []string `json:"container_ids"`
 }
 
 // PodResponse is the cniserver response format

@@ -130,7 +130,12 @@ func (csh cniServerHandler) handleAdd(req *restful.Request, resp *restful.Respon
 
 	ipAddr = fmt.Sprintf("%s/%s", ip, strings.Split(cidr, "/")[1])
 	klog.Infof("create container mac %s, ip %s, cidr %s, gw %s", macAddr, ipAddr, cidr, gw)
-	err = csh.configureNic(podRequest.PodName, podRequest.PodNamespace, podRequest.NetNs, podRequest.ContainerID, macAddr, ipAddr, gw, ingress, egress)
+
+	var device string
+	if len(podRequest.DeviceIDs) != 0 {
+		device := podRequest.DeviceIDs[0]
+	}
+	err = csh.configureNic(podRequest.PodName, podRequest.PodNamespace, podRequest.NetNs, podRequest.ContainerID, macAddr, ipAddr, gw, ingress, egress, device)
 	if err != nil {
 		errMsg := fmt.Errorf("configure nic failed %v", err)
 		klog.Error(errMsg)

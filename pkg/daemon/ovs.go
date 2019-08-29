@@ -8,28 +8,38 @@ import (
 	"github.com/containernetworking/plugins/pkg/ns"
 	"github.com/containernetworking/plugins/pkg/utils/sysctl"
 	"github.com/vishvananda/netlink"
+	"github.com/Mellanox/sriovnet"
+
 	"k8s.io/klog"
 	"net"
 	"os/exec"
 )
 
-func (csh cniServerHandler) configureNic(podName, podNamespace, netns, containerID, mac, ip, gateway, ingress, egress string) error {
+func (csh cniServerHandler) configureNic(podName, podNamespace, netns, containerID, mac, ip, gateway, ingress, egress ,pciAddrs string) error {
 	var err error
 	hostNicName, containerNicName := generateNicName(containerID)
-	// Create a veth pair, put one end to container ,the other to ovs port
-	// NOTE: DO NOT use ovs internal type interface for container.
-	// Kubernetes will detect 'eth0' nic in pod, so the nic name in pod must be 'eth0'.
-	// When renaming internal interface to 'eth0', ovs will delete and recreate this interface.
-	veth := netlink.Veth{LinkAttrs: netlink.LinkAttrs{Name: hostNicName, MTU: csh.Config.MTU}, PeerName: containerNicName}
-	defer func() {
-		// Remove veth link in case any error during creating pod network.
+
+	if pciAddrs != "" {
+		err = configureSriovDevice(hostNicName, containerNicName, pciAddrs)
 		if err != nil {
-			netlink.LinkDel(&veth)
+			return fmt.Errorf("failed to config sr-iov device for %s %v", podName, err)
 		}
-	}()
-	err = netlink.LinkAdd(&veth)
-	if err != nil {
-		return fmt.Errorf("failed to crate veth for %s %v", podName, err)
+	} else {
+		// Create a veth pair, put one end to container ,the other to ovs port
+		// NOTE: DO NOT use ovs internal type interface for container.
+		// Kubernetes will detect 'eth0' nic in pod, so the nic name in pod must be 'eth0'.
+		// When renaming internal interface to 'eth0', ovs will delete and recreate this interface.
+		veth := netlink.Veth{LinkAttrs: netlink.LinkAttrs{Name: hostNicName, MTU: csh.Config.MTU}, PeerName: containerNicName}
+		defer func() {
+			// Remove veth link in case any error during creating pod network.
+			if err != nil {
+				netlink.LinkDel(&veth)
+			}
+		}()
+		err = netlink.LinkAdd(&veth)
+		if err != nil {
+			return fmt.Errorf("failed to create veth for %s %v", podName, err)
+		}
 	}
 
 	// Add veth pair host end to ovs port
@@ -61,6 +71,61 @@ func (csh cniServerHandler) configureNic(podName, podNamespace, netns, container
 		return fmt.Errorf("failed to open netns %q: %v", netns, err)
 	}
 	err = configureContainerNic(containerNicName, ip, gateway, macAddr, podNS)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (csh cniServerHandler) configureSriovDevice(hostNicName, containerNicName, pciAddrs string) error {
+	hostNicName, containerNicName := generateNicName(containerID)
+
+	// get vf netdevice by pci address
+	netdevices, err := sriovnet.GetNetDevicesFromPci(pciAddrs)
+	if err != nil {
+		return err
+	}
+
+	if len(netdevices) != 1 {
+		return fmt.Errorf("failed to get netdevice by pci address %s",pciAddrs)
+	}
+	netdevice := netdevices[0]
+
+	// get netdevice uplink representor
+	uplink, err := sriovnet.GetUplinkRepresentor(pciAddrs)
+	if err != nil {
+		return err
+	}
+
+	// get vf index by pci address
+	Index, err := sriovnet.GetVfIndexByPciAddress(pciAddrs)
+	if err != nil {
+		return err
+	}
+
+	// get vf representor
+	rep, err := sriovnet.GetVfRepresentor(uplink, vfIndex)
+	if err != nil {
+		retrun err
+	}
+
+	// rename vf netdevice and vf representor
+	err = renameLink(netdevice, hostNicName)
+	if err != nil {
+		return err
+	}
+	err = renameLink(rep, containerNicName)
+	if err != nil {
+		return err
+	}
+
+	// set MTU for sriov device
+	err = setMTU(hostNicName, csh.Config.MTU)
+	if err != nil {
+		return err
+	}
+	err = setMTU(containerNicName, csh.Config.MTU)
 	if err != nil {
 		return err
 	}
@@ -274,6 +339,38 @@ func configureMirror(portName string, mtu int) error {
 		if err != nil {
 			return fmt.Errorf("can not set mirror nic %s up %v", portName, err)
 		}
+	}
+
+	return nil
+}
+
+func renameLink(curName, newName string) error {
+	link, err := netlink.LinkByName(curName)
+	if err != nil {
+		return err
+	}
+
+	if err := netlink.LinkSetDown(link); err != nil {
+		return err
+	}
+	if err := netlink.LinkSetName(link, newName); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func setMTU(device, MTU string) error {
+	link, err := netlink.LinkByName(device)
+	if err != nil {
+		return err
+	}
+
+	if err := netlink.LinkSetDown(link); err != nil {
+		return err
+	}
+	if err := netlink.LinkSetMTU(link, MTU); err != nil {
+		return err
 	}
 
 	return nil

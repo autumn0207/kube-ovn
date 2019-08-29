@@ -187,3 +187,16 @@ func prettyPrint(obj interface{}) error {
 
 // NotImplementedError is used to indicate that a method is not implemented for the given platform
 var NotImplementedError = errors.New("Not Implemented")
+
+type PodDevicesEntry struct {
+	PodUID        string
+	ContainerName string
+	ResourceName  string
+	DeviceIDs     []string
+	AllocResp     []byte
+}
+
+type checkpointData struct {
+	PodDeviceEntries  []PodDevicesEntry
+	RegisteredDevices map[string][]string
+}

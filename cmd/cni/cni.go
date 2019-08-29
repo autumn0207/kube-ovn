@@ -16,6 +16,11 @@ import (
 	"github.com/containernetworking/cni/pkg/version"
 )
 
+const (
+	checkPointfile = "/var/lib/kubelet/device-plugins/kubelet_internal_checkpoint"
+	resourceNames = ["mellanox.com/cx5_sriov_switchdev", "mellanox.com/cx4lx_sriov_switchdev"]
+)
+
 func init() {
 	// this ensures that main runs only on main thread (thread group leader).
 	// since namespace ops (unshare, setns) are done for a single thread, we
@@ -42,6 +47,10 @@ func cmdAdd(args *skel.CmdArgs) error {
 	if err != nil {
 		return err
 	}
+	deviceIDs, err = getDeviceIDs(args.ContainerID)
+	if err != nil {
+		return err
+	}
 
 	client := request.NewCniServerClient(n.ServerSocket)
 
@@ -49,7 +58,8 @@ func cmdAdd(args *skel.CmdArgs) error {
 		PodName:      podName,
 		PodNamespace: podNamespace,
 		ContainerID:  args.ContainerID,
-		NetNs:        args.Netns})
+		NetNs:        args.Netns,
+		deviceIDs:    deviceIDs})
 	if err != nil {
 		return err
 	}
@@ -125,6 +135,30 @@ func loadNetConf(bytes []byte) (*netConf, string, error) {
 		return nil, "", fmt.Errorf("server_socket is required in cni.conf")
 	}
 	return n, n.CNIVersion, nil
+}
+
+func getDeviceIDs(podID) ([]string, error) {
+	cpd := &types.checkpointFileData{}
+	deviceIDs := []string{}
+	rawBytes, err := ioutil.ReadFile(checkPointfile)
+	if err != nil {
+		return deviceIDs, logging.Errorf("failed to reading file %s\n%v\n", checkPointfile, err)
+	}
+
+	if err = json.Unmarshal(rawBytes, cpd); err != nil {
+		return deviceIDs, logging.Errorf("failed to unmarshalling raw bytes %v", err)
+	}
+
+	for _, pod := range cpd.Data.PodDeviceEntries {
+		if pod.PodUID == podID {
+			for device := range resourceNames {
+				if device == pod.ResourceName {
+					deviceIDs = append(deviceIDs, device)
+				}
+			}
+		}
+	}
+	return deviceIDs, nil
 }
 
 func parseValueFromArgs(key, argString string) (string, error) {
